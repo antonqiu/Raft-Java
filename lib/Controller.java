@@ -5,13 +5,13 @@ import java.rmi.RemoteException;
 import java.rmi.registry.LocateRegistry;
 import java.rmi.registry.Registry;
 import java.rmi.server.UnicastRemoteObject;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.HashMap;
 import java.util.Random;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-
+import java.util.concurrent.*;
 /**
  * Controller - This class is the implementation of the MessageLayer, which is
  * to simulate an underlayer unreliable network, all the message from each rafe
@@ -37,7 +37,7 @@ public class Controller extends UnicastRemoteObject implements MessagingLayer {
      * Contains map from the node ID to the remote reference object of each
      * raft peer.
      */
-    private Map<Integer, Node> nodes;
+    private ConcurrentMap<Integer, Node> nodes;
     /**
      * Network reliable flag, delay ,drop.
      */
@@ -52,17 +52,13 @@ public class Controller extends UnicastRemoteObject implements MessagingLayer {
     /**
      * rpc counters.
      */
-    private Map<Integer, Integer> rpc_counters;
-    /**
-     * Lock for sync
-     */
-    private Object lock;
+    private ConcurrentMap<Integer, Integer> rpc_counters;
     /**
      * Controller - Construct a controller listening on a given port.
      * @param port the given port for controller
      * @throws Exception
      */
-    public Controller(int port) throws Exception{
+    public Controller(int port) throws Exception {
         reliable = true;
         try {
             reg = LocateRegistry.createRegistry(port);
@@ -70,10 +66,9 @@ public class Controller extends UnicastRemoteObject implements MessagingLayer {
             //already exist
         }
         Naming.rebind("rmi://localhost:" + port + "/MessageServer", this);
-        nodes = new HashMap<>();
+        nodes = new ConcurrentHashMap<>();
         disconnected_nodes = new HashMap<>();
-        rpc_counters = new HashMap<>();
-        lock = new Object();
+        rpc_counters = new ConcurrentHashMap<>();
     }
 
     /**
@@ -107,11 +102,8 @@ public class Controller extends UnicastRemoteObject implements MessagingLayer {
             return reply;
         }
 
-        synchronized (lock) {
-            int counter = rpc_counters.getOrDefault(message.getDest(), 0);
-            rpc_counters.put(message.getDest(), counter + 1);
-        }
-
+        int counter = rpc_counters.getOrDefault(message.getDest(), 0);
+        rpc_counters.put(message.getDest(), counter + 1);
 
         // try what to do with this message packet
         boolean successDeliver = makeDecision(message);
@@ -151,9 +143,7 @@ public class Controller extends UnicastRemoteObject implements MessagingLayer {
     }
 
     public int getRPCCount(int node) {
-        synchronized (lock) {
-            return rpc_counters.getOrDefault(node, 0);
-        }
+        return rpc_counters.getOrDefault(node, 0);
     }
 
     /**
