@@ -1,9 +1,9 @@
 package lib;
 
 public class PersistentState {
-  private Log log;
-  private int currentTerm;
-  private int votedFor;
+  public Log log;
+  public int currentTerm;
+  public int votedFor;
 
   public PersistentState() {
     this.log = new Log();
