@@ -1,9 +1,11 @@
 package lib;
 
 import java.io.Serializable;
+import java.util.logging.Logger;
 
 public class LogEntry implements Serializable {
-
+  private static final Logger LOGGER = Logger.getLogger(LogEntry.class.getName());
+  private static final long serialVersionUID = 1L;
   private int term;
   private int index;
   private int command;

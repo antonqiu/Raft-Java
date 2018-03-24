@@ -3,8 +3,10 @@ package lib;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.logging.Logger;
 
 public class Log {
+  private static final Logger LOGGER = Logger.getLogger(Log.class.getName());
   private ArrayList<LogEntry> log;
 
   public Log() {
@@ -29,11 +31,11 @@ public class Log {
     return log.subList(startIdx, endIdx).toArray(new LogEntry[0]);
   }
 
-  public int getTermForIndex (int index) {
-    if (index < 1) {
+  public int getTermForIndex (int idx) {
+    if (idx < 1 || idx >= getSize()) {
       return 0;
     }
-    return log.get(index).getTerm();
+    return log.get(idx).getTerm();
   }
 
   public int getLatestTerm() {
