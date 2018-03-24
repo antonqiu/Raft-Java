@@ -1,6 +1,7 @@
 package lib;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 public class Log {
@@ -8,6 +9,7 @@ public class Log {
 
   public Log() {
     this.log = new ArrayList<>();
+    this.log.add(null);
   }
 
   public int getSize() {
@@ -28,9 +30,33 @@ public class Log {
   }
 
   public int getTermForIndex (int index) {
-    if (index < 0) {
+    if (index < 1) {
       return 0;
     }
     return log.get(index).getTerm();
+  }
+
+  public int getLatestTerm() {
+    return this.getTermForIndex(getSize() - 1);
+  }
+
+  public int getLastestIndex() {
+    return getSize() - 1;
+  }
+
+  public boolean appendAllLogEntries(int index, LogEntry[] entries) {
+    return log.addAll(index, Arrays.asList(entries));
+  }
+
+  public boolean appendLogEntry(LogEntry entry) {
+    return log.add(entry);
+  }
+
+  public void removeLogEntriesStartingAt(int startIdx) {
+    log.subList(startIdx, getSize()).clear();
+  }
+
+  public boolean isUpToDate(int lastLogTerm, int lastLogIndex) {
+    return lastLogTerm >= this.getLatestTerm() && lastLogIndex >= this.getLastestIndex();
   }
 }

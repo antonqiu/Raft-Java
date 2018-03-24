@@ -37,4 +37,10 @@ public class LogEntry implements Serializable {
   public void setCommand(int command) {
     this.command = command;
   }
+
+  public boolean equals(LogEntry entry) {
+    return this.term == entry.term &&
+        this.index == entry.index &&
+        this.command == entry.command;
+  }
 }
