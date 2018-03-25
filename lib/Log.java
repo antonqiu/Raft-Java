@@ -13,11 +13,11 @@ public class Log {
     this.log = new CopyOnWriteArrayList<LogEntry>();
   }
 
-  public int getSize() {
+  public synchronized int getSize() {
     return log.size();
   }
 
-  public LogEntry getLogEntryByIndex(int index) {
+  public synchronized LogEntry getLogEntryByIndex(int index) {
     if (index < 1) {
       return null;
     }
@@ -28,39 +28,42 @@ public class Log {
     }
   }
 
-  // not end inclusive
-  public ArrayList<LogEntry> getLogEntriesInRange(int startIdx, int endIdx) {
-    return new ArrayList<>(log.subList(startIdx-1, endIdx-1));
+  public synchronized ArrayList<LogEntry> getLogEntriesStartingAt(int startIdx) {
+    if (startIdx > 0 && startIdx <= this.getSize()) {
+      return new ArrayList<>(log.subList(startIdx - 1, this.getSize()));
+    } else {
+      return new ArrayList<>();
+    }
   }
 
-  public int getTermForIndex (int idx) {
+  public synchronized int getTermForIndex (int idx) {
     if (idx < 1 || idx > getSize()) {
       return 0;
     }
     return log.get(idx - 1).getTerm();
   }
 
-  public int getLatestTerm() {
+  public synchronized int getLatestTerm() {
     return this.getTermForIndex(getSize());
   }
 
-  public int getLatestIndex() {
+  public synchronized int getLatestIndex() {
     return getSize();
   }
 
-  public boolean appendAllLogEntries(int index, List<LogEntry> entries) {
+  public synchronized boolean appendAllLogEntries(int index, List<LogEntry> entries) {
     return log.addAll(entries.subList(index, entries.size()));
   }
 
-  public boolean appendLogEntry(LogEntry entry) {
+  public synchronized boolean appendLogEntry(LogEntry entry) {
     return log.add(entry);
   }
 
-  public void removeLogEntriesStartingAt(int startIdx) {
+  public synchronized void removeLogEntriesStartingAt(int startIdx) {
     log.subList(startIdx - 1, getSize()).clear();
   }
 
-  public boolean isUpToDate(int lastLogTerm, int lastLogIndex) {
+  public synchronized boolean isUpToDate(int lastLogTerm, int lastLogIndex) {
     return lastLogTerm >= this.getLatestTerm() && lastLogIndex >= this.getLatestIndex();
   }
 

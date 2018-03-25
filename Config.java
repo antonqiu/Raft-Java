@@ -132,6 +132,7 @@ public class Config extends UnicastRemoteObject implements Remote {
 
     /* Attach server "whichServer" to this config's network. */
     public void connect( int whichServer ) throws RemoteException{
+        System.out.println(whichServer + "connects.");
         this.connected[whichServer] = true;
         transportLayerCtrl.re_connect(whichServer);
     }
