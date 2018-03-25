@@ -1,6 +1,7 @@
 package lib;
 
 import java.io.Serializable;
+import java.util.List;
 
 public class AppendEntriesArgs implements Serializable {
   private static final long serialVersionUID = 1L;
@@ -8,11 +9,11 @@ public class AppendEntriesArgs implements Serializable {
   public int leaderId;
   public int prevLogIndex;
   public int prevLogTerm;
-  public LogEntry[] entries;
+  public List<LogEntry> entries;
   public int leaderCommit;
 
   public AppendEntriesArgs(int term, int leaderId, int prevLogIndex, int prevLogTerm,
-      LogEntry[] entries, int leaderCommit) {
+      List<LogEntry> entries, int leaderCommit) {
     this.term = term;
     this.leaderId = leaderId;
     this.prevLogIndex = prevLogIndex;

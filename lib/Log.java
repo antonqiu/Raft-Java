@@ -1,17 +1,16 @@
 package lib;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Logger;
 
 public class Log {
   private static final Logger LOGGER = Logger.getLogger(Log.class.getName());
-  private ArrayList<LogEntry> log;
+  private CopyOnWriteArrayList<LogEntry> log;
 
   public Log() {
-    this.log = new ArrayList<>();
-    this.log.add(null);
+    this.log = new CopyOnWriteArrayList<LogEntry>();
   }
 
   public int getSize() {
@@ -19,35 +18,38 @@ public class Log {
   }
 
   public LogEntry getLogEntryByIndex(int index) {
+    if (index < 1) {
+      return null;
+    }
     try {
-      return log.get(index);
-    } catch (ArrayIndexOutOfBoundsException e) {
+      return log.get(index - 1);
+    } catch (IndexOutOfBoundsException e) {
       return null;
     }
   }
 
   // not end inclusive
-  public LogEntry[] getLogEntriesInRange(int startIdx, int endIdx) {
-    return log.subList(startIdx, endIdx).toArray(new LogEntry[0]);
+  public ArrayList<LogEntry> getLogEntriesInRange(int startIdx, int endIdx) {
+    return new ArrayList<>(log.subList(startIdx-1, endIdx-1));
   }
 
   public int getTermForIndex (int idx) {
-    if (idx < 1 || idx >= getSize()) {
+    if (idx < 1 || idx > getSize()) {
       return 0;
     }
-    return log.get(idx).getTerm();
+    return log.get(idx - 1).getTerm();
   }
 
   public int getLatestTerm() {
-    return this.getTermForIndex(getSize() - 1);
+    return this.getTermForIndex(getSize());
   }
 
-  public int getLastestIndex() {
-    return getSize() - 1;
+  public int getLatestIndex() {
+    return getSize();
   }
 
-  public boolean appendAllLogEntries(int index, LogEntry[] entries) {
-    return log.addAll(index, Arrays.asList(entries));
+  public boolean appendAllLogEntries(int index, List<LogEntry> entries) {
+    return log.addAll(entries.subList(index, entries.size()));
   }
 
   public boolean appendLogEntry(LogEntry entry) {
@@ -55,10 +57,25 @@ public class Log {
   }
 
   public void removeLogEntriesStartingAt(int startIdx) {
-    log.subList(startIdx, getSize()).clear();
+    log.subList(startIdx - 1, getSize()).clear();
   }
 
   public boolean isUpToDate(int lastLogTerm, int lastLogIndex) {
-    return lastLogTerm >= this.getLatestTerm() && lastLogIndex >= this.getLastestIndex();
+    return lastLogTerm >= this.getLatestTerm() && lastLogIndex >= this.getLatestIndex();
+  }
+
+  @Override
+  public String toString() {
+    StringBuilder sb  = new StringBuilder();
+    sb.append('[');
+    for (int i = 0; i < log.size(); i++) {
+      LogEntry entry = log.get(i);
+      if (entry == null) {
+        sb.append("(NA, NA),");
+      } else {
+        sb.append(entry.toString()).append(',');
+      }
+    }
+    return sb.append(']').toString();
   }
 }

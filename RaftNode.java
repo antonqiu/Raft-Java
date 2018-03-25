@@ -5,8 +5,8 @@ import java.io.ObjectInput;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutput;
 import java.io.ObjectOutputStream;
-import java.io.Serializable;
 import java.rmi.RemoteException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Random;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -23,7 +23,6 @@ import lib.AppendEntriesReply;
 import lib.AppendEntriesArgs;
 import lib.ApplyMsg;
 import lib.GetStateReply;
-import lib.Log;
 import lib.LogEntry;
 import lib.Message;
 import lib.MessageHandling;
@@ -39,10 +38,10 @@ public class RaftNode implements MessageHandling {
 
   private static final Logger LOGGER = Logger.getLogger(RaftNode.class.getName());
 
-  private static final int ELECTION_TIMEOUT_MIN = 800;
-  private static final int HEARTBEAT_TIMEOUT_MIN = 250;
+  private static final int ELECTION_TIMEOUT_MIN = 600;
+  private static final int HEARTBEAT_TIMEOUT_MIN = 300;
   private static final int HEARTBEAT_EVERY_MILLI = 120; // 8 heartbeats per second
-  private static final int RANDOM_TIMEOUT_PLUS_RANGE = 200;
+  private static final int RANDOM_TIMEOUT_PLUS_RANGE = 300;
   private static final int QUEUE_SIZE = 500;
 
   private int id;
@@ -66,12 +65,11 @@ public class RaftNode implements MessageHandling {
   private int votesRcvd;
 
   /* MESSAGE QUEUES */
-  private BlockingQueue<Object> outgoingReplyMsgQueue;
 
   public RaftNode(int port, int id, int num_peers) {
     LOGGER.setLevel(Level.ALL);
     ConsoleHandler ch = new ConsoleHandler();
-    ch.setLevel(Level.FINE);
+    ch.setLevel(Level.FINER);
     LOGGER.addHandler(ch);
 
     this.id = id;
@@ -94,12 +92,8 @@ public class RaftNode implements MessageHandling {
     // init candidate state
     this.votesRcvd = 0;
 
-    // init queue
-    this.outgoingReplyMsgQueue = new ArrayBlockingQueue<>(QUEUE_SIZE);
-
     this.startRoleChangeOperator();
     LOGGER.fine(String.format("Node %d initialized.", this.id));
-    // System.out.println(String.format("Node %d initialized.", this.id));
   }
 
   private void startRoleChangeOperator() {
@@ -108,6 +102,7 @@ public class RaftNode implements MessageHandling {
     int actualElectionTimeout = ELECTION_TIMEOUT_MIN;
     ExecutorService executor = Executors.newSingleThreadExecutor();
     executor.submit(() -> {
+      // LOGGER.info(Thread.currentThread().getName());
       while (true) {
         if (this.role == Role.LEADER) {
           synchronized (this) {
@@ -119,7 +114,8 @@ public class RaftNode implements MessageHandling {
           TimeUnit.MILLISECONDS.sleep(actualHeartbeatTimeout);
           synchronized (this) {
             if (!isHeardHeartbeat() && !state.isVoting) {
-              LOGGER.fine(String.format("Node %d: Heartbeat timed out.", id));
+              LOGGER.fine(String.format("Node %d %s: timeout: HB %s, voting %s.", id, role,
+                  isHeardHeartbeat(), state.isVoting()));
               this.electSelf();
             }
             setHeardHeartbeat(false);
@@ -148,13 +144,14 @@ public class RaftNode implements MessageHandling {
         continue;  // do not send message to itself
       }
       // build AppendEntriesArgs
-      LogEntry[] entries;
+      ArrayList<LogEntry> entries;
       if (isHeartbeat) {
-        entries = null;
+        entries = new ArrayList<>();
       } else {
-        entries = state.log.getLogEntriesInRange(nextIndex[peerId], state.log.getSize());
+        entries = state.log.getLogEntriesInRange(nextIndex[peerId], state.log.getLatestIndex() + 1);
+        LOGGER.finest(String.format("Node %d %s: sublist: %d %d -> length %d.", id, role,
+            nextIndex[peerId], state.log.getSize(), entries.size()));
       }
-      state.log.getTermForIndex(this.nextIndex[peerId]);
       AppendEntriesArgs args = new AppendEntriesArgs(
           this.state.currentTerm,
           this.id,
@@ -163,46 +160,111 @@ public class RaftNode implements MessageHandling {
           entries,
           this.commitIndex
       );
-      Executor executor = Executors.newSingleThreadExecutor();
-      CompletableFuture.supplyAsync(() -> {
-        byte[] argsBytes = RaftNode.objectToByteArray(args);
-        Message msg = new Message(
-            MessageType.AppendEntriesArgs,
-            this.id,
-            peerId,
-            argsBytes
-        );
+      ExecutorService executor = Executors.newSingleThreadExecutor();
+      executor.submit(() -> {
         try {
-          return lib.sendMessage(msg);
+          byte[] argsBytes = RaftNode.objectToByteArray(args);
+          Message msg = new Message(
+              MessageType.AppendEntriesArgs,
+              this.id,
+              peerId,
+              argsBytes
+          );
+          if (isHeartbeat) {
+            LOGGER.finest(String.format("Node %d %s: HB to %d: term %d (next %d match %d)", id,
+                role, peerId, args.term, nextIndex[peerId], matchIndex[peerId]));
+          } else {
+            LOGGER.finer(String.format("Node %d %s: to node %d: idx %d length %d", id, role, msg
+                    .getDest(), args.prevLogIndex + 1, args.entries.size()));
+          }
+          Message reply = lib.sendMessage(msg);
+          this.revAppendEntryReply(reply, args);
         } catch (RemoteException e) {
-          LOGGER.info("RMI exception when sending AppendEntriesArgs:\n " + msg.toString());
+          LOGGER.info("RMI exception when sending AppendEntriesArgs.");
           // e.printStackTrace();
-          return null;
+        } catch (Exception e) {
+          LOGGER.info("Exception when sending AppendEntriesArgs:\n " + e.getLocalizedMessage());
+          e.printStackTrace();
         }
-      }, executor)
-          .thenAcceptAsync(this::revAppendEntryReply, executor);
+      });
     }
   }
 
-  private synchronized void revAppendEntryReply(Message reply) {
-    LOGGER.fine(String.format("Node %d %s: rcvd AppendEntryReply from %d.", id, role, reply.getSrc()));
+  private synchronized void revAppendEntryReply(Message reply, AppendEntriesArgs args) {
     if (reply == null || role != Role.LEADER) {
       return;
     }
-    AppendEntriesReply repliedBytes = byteArrayToObject(reply.getBody());
-    if (repliedBytes == null) {
+    LOGGER.finest(
+        String.format("Node %d %s: rcvd AppendEntryReply from %d.", id, role, reply.getSrc()));
+    AppendEntriesReply aer = (AppendEntriesReply) byteArrayToObject(reply.getBody());
+    if (aer == null) {
       return;
     }
 
     // all server #2, leader to follower
-    if (role != Role.FOLLOWER && repliedBytes.term > state.currentTerm) {
+    if (aer.term > state.currentTerm) {
       setRole(Role.FOLLOWER);
-      this.state.currentTerm = repliedBytes.term;
+      this.state.currentTerm = aer.term;
       this.state.votedFor = -1;
       LOGGER.fine(String.format("Node %d %s: resigned to FOLLOWER. Waiting for HB.", id, role));
+      return;
     }
 
-    // TODO:
+    if (aer.success) {
+      this.nextIndex[reply.getSrc()] += args.entries.size();
+      this.matchIndex[reply.getSrc()] = this.nextIndex[reply.getSrc()] - 1;
+
+      if (args.entries.size() != 0) {
+        LOGGER.finer(
+            String.format("Node %d %s: AER FROM %d SUCCESS: term %d (next %d match %d) ",
+                id, role, reply.getSrc(), aer.term, nextIndex[reply.getSrc()], matchIndex[reply
+                    .getSrc()]));
+      } else {
+        LOGGER.finest(
+            String.format("Node %d %s: HB FROM %d SUCCESS: term %d (next %d match %d) ",
+                id, role, reply.getSrc(), aer.term, nextIndex[reply.getSrc()], matchIndex[reply
+                    .getSrc()]));
+      }
+
+      // if node has entries to be committed, and at least one entry in this term is pushed
+      if (this.commitIndex < matchIndex[reply.getSrc()] &&
+          state.log.getTermForIndex(matchIndex[reply.getSrc()]) == state.currentTerm) {
+        int cnt = 0;
+        for (int i = 0; i < num_peers; i++) {
+          final int peerId = i;
+          // count++ if this node has saved this entry
+          if (matchIndex[peerId] >= matchIndex[reply.getSrc()]) {
+            cnt++;
+          }
+          if (cnt > num_peers / 2) {
+            // ready to commit and apply
+            commitIndex = matchIndex[reply.getSrc()];
+            for (int cIdx = lastApplied + 1; cIdx <= commitIndex; cIdx++) {
+              try {
+                lib.applyChannel(new ApplyMsg(this.id, cIdx, state.log.getLogEntryByIndex(cIdx)
+                    .getCommand(), false, null));
+                LOGGER.fine(String.format("Node %d %s: applied: idx%d command%d", id, role, cIdx,
+                    state.log.getLogEntryByIndex(cIdx).getCommand()));
+                lastApplied = cIdx;
+              } catch (RemoteException e) {
+                LOGGER.info(
+                    "RMI exception when applying entry:\n " + state.log.getLogEntryByIndex(cIdx)
+                        .toString());
+                // e.printStackTrace();
+              }
+            }
+            break;
+          }
+        }
+      }
+    } else {
+      // rejected
+      nextIndex[reply.getSrc()]--;
+
+      LOGGER.finer(
+          String.format("Node %d %s: AER FROM %d REJECTED: %d %d",
+              id, role, reply.getSrc(), nextIndex[reply.getSrc()], matchIndex[reply.getSrc()]));
+    }
   }
 
   private void electSelf() {
@@ -214,7 +276,6 @@ public class RaftNode implements MessageHandling {
     this.state.currentTerm++;
     this.state.votedFor = this.id;
 
-    Executor executor = Executors.newSingleThreadExecutor();
     for (int i = 0; i < num_peers; i++) {
       final int peerId = i;
       if (peerId == this.id) {
@@ -223,8 +284,8 @@ public class RaftNode implements MessageHandling {
       RequestVoteArgs args = new RequestVoteArgs(
           this.state.currentTerm,
           this.id,
-          this.state.log.getSize() - 1,
-          this.state.log.getTermForIndex(this.state.log.getSize() - 1));
+          state.log.getLatestIndex(),
+          this.state.log.getTermForIndex(this.state.log.getSize()));
       CompletableFuture.supplyAsync(() -> {
         Message msg = new Message(
             MessageType.RequestVoteArgs,
@@ -239,8 +300,8 @@ public class RaftNode implements MessageHandling {
           // e.printStackTrace();
           return null;
         }
-      }, executor)
-          .thenAcceptAsync(this::revRequestVoteReply, executor);
+      })
+          .thenAcceptAsync(this::revRequestVoteReply);
     }
   }
 
@@ -248,8 +309,21 @@ public class RaftNode implements MessageHandling {
     if (message == null || role != Role.CANDIDATE) {
       return;
     }
-    RequestVoteReply reply = byteArrayToObject(message.getBody());
+    RequestVoteReply reply = (RequestVoteReply) byteArrayToObject(message.getBody());
     if (reply == null) {
+      return;
+    }
+
+    if (state.currentTerm < reply.term) {
+      state.currentTerm = reply.term;
+      setRole(Role.FOLLOWER);
+      state.votedFor = -1;
+      LOGGER.fine(String.format("Node %d %s: resigned to FOLLOWER upon vote message.", id, role));
+      return;
+    }
+
+    if (state.currentTerm > reply.term) {
+      LOGGER.fine(String.format("Node %d %s: recv RequestVotesReply from prev term.", id, role));
       return;
     }
 
@@ -260,9 +334,9 @@ public class RaftNode implements MessageHandling {
     if (votesRcvd > num_peers / 2) {
       LOGGER.fine(String.format("Node %d was elected as LEADER.", id));
       setRole(Role.LEADER);
-      outgoingReplyMsgQueue.add(reply);
-      Arrays.fill(this.nextIndex, this.state.log.getSize());
+      Arrays.fill(this.nextIndex, this.state.log.getLatestIndex() + 1);
       Arrays.fill(this.matchIndex, 0);
+      state.setVoting(false);
     }
   }
 
@@ -271,17 +345,21 @@ public class RaftNode implements MessageHandling {
    */
 
   @Override
-  public synchronized StartReply start(int command) {
+  public StartReply start(int command) {
     if (this.role != Role.LEADER) {
       return new StartReply(0, 0, false);
     }
 
     this.state.log.appendLogEntry(
         new LogEntry(state.currentTerm,
-            state.log.getLastestIndex() + 1,
+            state.log.getLatestIndex() + 1,
             command));
+
+    LOGGER.fine(String.format("Node %d %s: Command: %d", id, role, command));
     this.sendAppendEntry(false);
-    return new StartReply(state.log.getLastestIndex(), state.currentTerm, true);
+    LOGGER.fine(String.format("Node %d %s: Command: %d, scheduled.", id, role, command));
+
+    return new StartReply(state.log.getLatestIndex(), state.currentTerm, true);
   }
 
   @Override
@@ -292,14 +370,16 @@ public class RaftNode implements MessageHandling {
   @Override
   public Message deliverMessage(Message message) {
     LOGGER.finest(String.format("Node %d %s: rcvd %s from %d. Processing.", this.id, role, message
-            .getType(),
-        message.getSrc()));
+            .getType(), message.getSrc()));
     if (message.getType() == MessageType.AppendEntriesArgs) {
-      AppendEntriesArgs request = byteArrayToObject(message.getBody());
+      AppendEntriesArgs request = (AppendEntriesArgs) byteArrayToObject(message.getBody());
       AppendEntriesReply reply = buildAppendEntryReply(request);
-      LOGGER.finest(String
-          .format("Node %d %s: rcvd %s from %d. Result: %s", this.id, role, message.getType(),
-              message.getSrc(), reply.success));
+      if (request.entries.size() != 0) {
+        LOGGER.finer(String
+            .format("Node %d %s: rcvd %s from %d. Result: %s", this.id, role, message.getType(),
+                message.getSrc(), reply.success));
+      }
+
       return new Message(
           MessageType.AppendEntriesReply,
           message.getDest(),
@@ -307,30 +387,34 @@ public class RaftNode implements MessageHandling {
           objectToByteArray(reply));
     } else if (message.getType() == MessageType.RequestVoteArgs) {
       this.state.setVoting(true);
-      RequestVoteArgs request = byteArrayToObject(message.getBody());
+      RequestVoteArgs request = (RequestVoteArgs) byteArrayToObject(message.getBody());
       RequestVoteReply reply = buildRequestVoteReply(request);
       // wait for election timeout
-      CompletableFuture.runAsync(() -> {
+      Executors.newSingleThreadExecutor().submit(() -> {
         try {
           TimeUnit.MILLISECONDS.sleep(ELECTION_TIMEOUT_MIN);
           if (state.isVoting) {
-            LOGGER.finest(String.format("Node %d: reset votedFor.", this.id));
-            this.state.votedFor = -1;
-          }
-          this.state.setVoting(false);
-        } catch (InterruptedException e) {
-          e.printStackTrace();
-        }
-      });
-      LOGGER.finest(String
-          .format("Node %d %s: rcvd %s from %d. Result: %s", this.id, role, message.getType(),
-              message.getSrc(), reply.voteGranted));
-      return new Message(
-          MessageType.RequestVoteReply,
-          this.id,
-          request.candidateId,
-          objectToByteArray(reply)
-      );
+            LOGGER.finer(String.format("Node %d: reset votedFor.", this.id));
+      this.state.votedFor = -1;
+    }
+    this.state.setVoting(false);
+  } catch (InterruptedException e) {
+    e.printStackTrace();
+  }
+});
+
+    LOGGER.finest(String
+    .format("Node %d %s: rcvd %s from %d. Result: %s", this.id, role, message.getType(),
+    message.getSrc(), reply.voteGranted));
+    return new Message(
+    MessageType.RequestVoteReply,
+    this.id,
+    request.candidateId,
+    objectToByteArray(reply)
+    );
+    } else {
+      LOGGER.warning(String
+          .format("Node %d %s: unknown message type %s. ", this.id, role, message.getType()));
     }
     return null;
   }
@@ -338,6 +422,8 @@ public class RaftNode implements MessageHandling {
   private synchronized RequestVoteReply buildRequestVoteReply(RequestVoteArgs request) {
     // all server #2, leader to follower
     if (request.term > state.currentTerm) {
+      if (role != Role.FOLLOWER)
+        LOGGER.fine(String.format("Node %d %s: resigned to FOLLOWER. Waiting for HB.", id, role));
       setRole(Role.FOLLOWER);
       this.state.currentTerm = request.term;
       this.state.votedFor = -1;
@@ -345,17 +431,17 @@ public class RaftNode implements MessageHandling {
 
     // #1
     if (request.term < this.state.currentTerm) {
+      LOGGER.finest(String.format("Node %d %s: req term %d < cur term %d.", id, role, request.term,
+       state.currentTerm));
       RequestVoteReply r = new RequestVoteReply(this.state.currentTerm, false);
-      outgoingReplyMsgQueue.add(r);
       return r;
     }
 
     // additional rule: break the tie
     if (request.term == this.state.currentTerm && role == Role.CANDIDATE) {
       // break the tie
-      boolean voteGranted = request.candidateId > this.id;
+      boolean voteGranted = request.candidateId < this.id;
       RequestVoteReply r = new RequestVoteReply(this.state.currentTerm, voteGranted);
-      outgoingReplyMsgQueue.add(r);
       if (voteGranted) {
         this.role = Role.FOLLOWER;
         this.state.votedFor = request.candidateId;
@@ -371,14 +457,15 @@ public class RaftNode implements MessageHandling {
         this.state.log.isUpToDate(request.lastLogTerm, request.lastLogIndex)) {
       this.state.votedFor = request.candidateId;
       RequestVoteReply r = new RequestVoteReply(this.state.currentTerm, true);
-      outgoingReplyMsgQueue.add(r);
       LOGGER.finer(String.format("Node %d voted for %d.", id, request.candidateId));
       return r;
     }
 
     // #3
     RequestVoteReply r = new RequestVoteReply(this.state.currentTerm, false);
-    outgoingReplyMsgQueue.add(r);
+    LOGGER.finest(String.format("Node %d %s: not voting for %d: req(%d %d) cur(%d %d).", id, role,
+        request.candidateId,request.lastLogTerm, request.lastLogIndex, state.log.getLatestTerm(),
+        state.log.getLatestIndex()));
     return r;
   }
 
@@ -387,11 +474,13 @@ public class RaftNode implements MessageHandling {
     state.setVoting(false);
     // all server #2, leader to follower
     if (request.term > state.currentTerm) {
+      if (role != Role.FOLLOWER) {
+        LOGGER.fine(String.format("Node %d %s: resigned to FOLLOWER. Recognized node %d.", id,
+            role, request.leaderId));
+      }
       setRole(Role.FOLLOWER);
       this.state.currentTerm = request.term;
       this.state.votedFor = request.leaderId;
-      LOGGER.fine(String.format("Node %d %s: resigned to FOLLOWER. Recognized node %d.", id,
-          role, request.leaderId));
     }
 
     // at this point, we're sure that this is the current leader
@@ -404,52 +493,62 @@ public class RaftNode implements MessageHandling {
     if (request.term < state.currentTerm) {
       // reply false
       AppendEntriesReply r = new AppendEntriesReply(state.currentTerm, false);
-      outgoingReplyMsgQueue.add(r);
       return r;
     }
 
     // #2 RPC
     if (state.log.getTermForIndex(request.prevLogIndex) != request.prevLogTerm) {
       AppendEntriesReply r = new AppendEntriesReply(state.currentTerm, false);
-      outgoingReplyMsgQueue.add(r);
       return r;
     }
 
     // #3 & #4
-    for (int newEntriesIdx = 0; newEntriesIdx < request.entries.length; newEntriesIdx++) {
+    for (int newEntriesIdx = 0; newEntriesIdx < request.entries.size(); newEntriesIdx++) {
       int logIdx = request.prevLogIndex + 1 + newEntriesIdx;
-      LogEntry proposed = request.entries[newEntriesIdx];
+      LogEntry proposed = request.entries.get(newEntriesIdx);
       LogEntry saved = state.log.getLogEntryByIndex(logIdx);
       if (saved == null) {
         state.log.appendAllLogEntries(newEntriesIdx, request.entries);
+        LOGGER.finer(String.format("Node %d %s: appendAllLogEntries: %s", id, role, request
+            .entries.toString()));
+        LOGGER.finer(String.format("Node %d %s: log: %s", id, role, state.log.toString()));
         break;
       } else if (!saved.equals(proposed)) {
         state.log.removeLogEntriesStartingAt(logIdx);
         state.log.appendAllLogEntries(newEntriesIdx, request.entries);
+        LOGGER.finer(String.format("Node %d %s: remove&appendAllLogEntries: %s", id, role, request
+            .entries.toString()));
+        LOGGER.finer(String.format("Node %d %s: log: %s", id, role, state.log.toString()));
         break;
       }
     }
 
     // #5
     if (request.leaderCommit > commitIndex) {
-      commitIndex = Math.min(request.leaderCommit, state.log.getLastestIndex());
+      commitIndex = Math.min(request.leaderCommit, state.log.getLatestIndex());
+      LOGGER.finer(String.format("Node %d %s: updateCommitIndex: %d", id, role, commitIndex));
     }
 
     // all server #1
     if (lastApplied < commitIndex) {
       for (int i = lastApplied; i < commitIndex; i++) {
         try {
-          lib.applyChannel(new ApplyMsg(this.id, i + 1, state.log.getLogEntryByIndex(i + 1)
-              .getCommand(), false, null));
-          lastApplied += 1;
+          LOGGER.fine(String.format("Node %d %s: about to apply: idx%d command: %d", id, role, i
+                  + 1, state.log.getLogEntryByIndex(i + 1).getCommand()));
+          lib.applyChannel(new ApplyMsg(this.id, state.log.getLogEntryByIndex(i + 1).getIndex(), state.log
+              .getLogEntryByIndex(i + 1).getCommand(), false, null));
+          LOGGER.fine(String.format("Node %d %s: applied: idx%d command: %d", id, role, i + 1,
+              state.log.getLogEntryByIndex(i + 1).getCommand()));
+          lastApplied = i + 1;
         } catch (RemoteException e) {
+          e.printStackTrace();
+        } catch (Exception e) {
           e.printStackTrace();
         }
       }
     }
 
     AppendEntriesReply r = new AppendEntriesReply(state.currentTerm, true);
-    outgoingReplyMsgQueue.add(r);
     return r;
   }
 
@@ -500,12 +599,12 @@ public class RaftNode implements MessageHandling {
    * Credits: https://goo.gl/EKa7iZ
    */
   @SuppressWarnings("unchecked")
-  private static <T extends Serializable> T byteArrayToObject(byte[] byteArray) {
+  private static Object byteArrayToObject(byte[] byteArray) {
     ByteArrayInputStream bis = new ByteArrayInputStream(byteArray);
     ObjectInput in = null;
     try {
       in = new ObjectInputStream(bis);
-      return (T) in.readObject();
+      return in.readObject();
     } catch (IOException | ClassNotFoundException e) {
       e.printStackTrace();
     } finally {

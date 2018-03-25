@@ -45,4 +45,9 @@ public class LogEntry implements Serializable {
         this.index == entry.index &&
         this.command == entry.command;
   }
+
+  @Override
+  public String toString() {
+    return String.format("(t%d, i%d, c%d)", term, index, command);
+  }
 }
