@@ -6,6 +6,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Logger;
 
 public class Log {
+
   private static final Logger LOGGER = Logger.getLogger(Log.class.getName());
   private CopyOnWriteArrayList<LogEntry> log;
 
@@ -36,7 +37,7 @@ public class Log {
     }
   }
 
-  public synchronized int getTermForIndex (int idx) {
+  public synchronized int getTermForIndex(int idx) {
     if (idx < 1 || idx > getSize()) {
       return 0;
     }
@@ -64,12 +65,13 @@ public class Log {
   }
 
   public synchronized boolean isUpToDate(int lastLogTerm, int lastLogIndex) {
-    return lastLogTerm >= this.getLatestTerm() && lastLogIndex >= this.getLatestIndex();
+    return lastLogTerm > this.getLatestTerm() || (lastLogTerm == this.getLatestTerm()
+        && lastLogIndex >= this.getLatestIndex());
   }
 
   @Override
   public String toString() {
-    StringBuilder sb  = new StringBuilder();
+    StringBuilder sb = new StringBuilder();
     sb.append('[');
     for (int i = 0; i < log.size(); i++) {
       LogEntry entry = log.get(i);
